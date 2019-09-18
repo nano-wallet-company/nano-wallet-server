@@ -26,7 +26,7 @@ You must configure using environment variables. You may do this manually, as par
 ```
 export NANO_RPC_URL=http://<host>:<rpcport>
 export NANO_WORK_URL=http://<host>:<workport>
-export NANO_CALLBACK_PORT=17076
+export NANO_WS_URL=ws://<host>:<websocketport>
 export NANO_SOCKET_PORT=443
 export NANO_CERT_DIR=/home/<username>
 export NANO_KEY_FILE=<yourdomain>.key
@@ -37,24 +37,25 @@ export NANO_LOG_LEVEL=INFO
 ### Configure node for RPC
 Ensure rpc is enabled as well as control (security over internal wallet is provided in whitelisted commands)
 
-~/RaiBlocks/config.json:
+config-node.toml:
 ```
-    "rpc_enable": "true",
-    "rpc": {
-        "address": "::1",
-        "port": "7076",
-        "enable_control": "true",
+[rpc]
+enable = true
+```
+config-rpc.toml
+```
+enable_control = true
 ```
 
 
 ### Configure node callback for new block publication
-Set config.json for your node
-
-~/RaiBlocks/config.json:
+Set config-node.toml for your node
 ```
-        "callback_address": "127.0.0.1",
-        "callback_port": "17076",
-        "callback_target": "\/",
+[node.websocket]
+
+# Enable or disable WebSocket server
+# type:bool
+enable = true
 ```
 
 ## Setup cron job for price retrieval
@@ -83,7 +84,7 @@ After=network-online.target
 [Service]
 Environment=NANO_RPC_URL=http://<host>:<rpcport>
 Environment=NANO_WORK_URL=http://<host>:<workport>
-Environment=NANO_CALLBACK_PORT=17076
+Environment=NANO_WS_URL=ws://<host>:<websocketport>
 Environment=NANO_SOCKET_PORT=443
 Environment=NANO_CERT_DIR=/home/user
 Environment=NANO_KEY_FILE=yourdomain.key

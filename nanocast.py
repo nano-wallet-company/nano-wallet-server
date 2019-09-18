@@ -7,14 +7,17 @@ import tornado.httpclient
 import tornado.httpserver
 import tornado.gen
 import json
-import redis
-import time
-import ssl
-import uuid
 import logging
 import os
+import redis
+import socket
+import ssl
 import sys
+import time
+import uuid
 
+from tornado.ioloop import IOLoop
+from tornado.websocket import websocket_connect
 from logging.handlers import WatchedFileHandler
 from bitstring import BitArray
 
@@ -28,8 +31,8 @@ rdata = redis.StrictRedis(host='localhost', port=6379, db=2)  # used for price d
 
 # get environment
 rpc_url = os.getenv('NANO_RPC_URL', 'http://127.0.0.1:7076')  # use env, else default to localhost rpc port
+websocket_url = os.getenv('NANO_WS_URL', 'ws://127.0.0.1:7078')  # use env, else default to localhost websocket port
 work_url = os.getenv('NANO_WORK_URL', rpc_url)  # use env, else default to rpc
-callback_port = os.getenv('NANO_CALLBACK_PORT', 17076)
 socket_port = os.getenv('NANO_SOCKET_PORT', 443)
 cert_dir = os.getenv('NANO_CERT_DIR')  # use /home/username instead of /home/username/
 cert_key_file = os.getenv('NANO_KEY_FILE')  # TLS certificate private key
@@ -569,37 +572,61 @@ class WSHandler(tornado.websocket.WebSocketHandler):
                 break
 
 
-class Callback(tornado.web.RequestHandler):
-    async def post(self):
-        data = self.request.body.decode('utf-8')
-        data = json.loads(data)
-        data['block'] = json.loads(data['block'])
+class Client(object):
+    def __init__(self, url, timeout):
+        self.url = url
+        self.timeout = timeout
+        self.ioloop = IOLoop.instance()
+        self.ws = None
+        self.connect()
+        self.ioloop.start()
 
-        if data['block']['type'] == 'send':
-            target = data['block']['destination']
-            if subscriptions.get(target):
-                print("             Pushing to client %s" % subscriptions[target])
-                logging.info('push to client;' + json.dumps(data['block']) + ';' + subscriptions[target])
-                clients[subscriptions[target]].write_message(json.dumps(data))
+    @tornado.gen.coroutine
+    def connect(self):
+        print("trying to connect")
+        try:
+            self.ws = yield websocket_connect(self.url)
+        except Exception as e:
+            print("connection error")
+        else:
+            print("connected")
+            self.ws.write_message(
+                json.dumps({'action': 'subscribe', 'topic': 'confirmation', 'ack': 'true', 'id': socket.gethostname()}))
+            self.run()
 
-        elif data['block']['type'] == 'state':
-            link = data['block']['link_as_account']
-            if subscriptions.get(link):
-                print("             Pushing to client %s" % subscriptions[link])
-                logging.info('push to client;' + json.dumps(data) + ';' + subscriptions[link])
-                clients[subscriptions[link]].write_message(json.dumps(data))
-        elif subscriptions.get(data['account']):
-            print("             Pushing to client %s" % subscriptions[data['account']])
-            logging.info('push to client;' + json.dumps(data) + ';' + subscriptions[data['account']])
-            clients[subscriptions[data['account']]].write_message(json.dumps(data))
+    @tornado.gen.coroutine
+    def run(self):
+        while True:
+            msg = yield self.ws.read_message()
+            if msg is not None:
+                self.missed = 0
+                data = json.loads(msg)
+                try:
+                    data['topic'] == 'confirmation'
+                    if data['message']['block']['type'] == 'send':
+                        target = data['message']['block']['destination']
+                        if subscriptions.get(target):
+                            print("             Pushing to client %s" % subscriptions[target])
+                            logging.info(
+                                'push to client;' + json.dumps(data['message']['block']) + ';' + subscriptions[target])
+                            clients[subscriptions[target]].write_message(json.dumps(data['message']))
+                    elif data['message']['block']['type'] == 'state':
+                        link = data['message']['block']['link_as_account']
+                        if subscriptions.get(link):
+                            print("             Pushing to client %s" % subscriptions[link])
+                            logging.info('push to client;' + json.dumps(data['message']) + ';' + subscriptions[link])
+                            clients[subscriptions[link]].write_message(json.dumps(data['message']))
+                        elif subscriptions.get(data['message']['account']):
+                            print("             Pushing to client %s" % subscriptions[data['message']['account']])
+                            logging.info('push to client;' + json.dumps(data['message']) + ';' + subscriptions[data['message']['account']])
+                            clients[subscriptions[data['message']['account']]].write_message(json.dumps(data['message']))
+                except Exception as e:
+                    # Sometimes we receive messages we dont understand. This is ok!!
+                    logging.info(json.dumps(data) + ' message unhandled')
 
 
 application = tornado.web.Application([
     (r"/", WSHandler),
-])
-
-nodecallback = tornado.web.Application([
-    (r"/", Callback),
 ])
 
 if __name__ == "__main__":
@@ -620,12 +647,7 @@ if __name__ == "__main__":
     https_server = tornado.httpserver.HTTPServer(application, ssl_options=cert)
     https_server.listen(socket_port)
 
-    nodecallback.listen(callback_port)  # set in config.json as follows:
-    # 	"callback_address": "127.0.0.1",
-    # 	"callback_port": "17076",
-    # 	"callback_target": "/"
-
     # push latest price data to all subscribers every minute
     tornado.ioloop.PeriodicCallback(send_prices, 60000).start()
-
+    client = Client(websocket_url, 5)
     tornado.ioloop.IOLoop.instance().start()
